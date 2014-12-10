@@ -1,0 +1,103 @@
+#!/bin/bash
+KERNEL="linux"
+ALTERNATE="last"
+FSROOT_DEV="/dev/sda1"
+FSROOT="/var/lib/fsroot"
+LOCK_FILE=".container-lock"
+SUBVOLUME_A=$(btrfs subvolume get-default "$FSROOT" | awk -F "path " '{print $2}')
+SUBVOLUME_B="#B"
+SUBVOLUME_C="#C"
+SUBVOLUME_TEMP="#TEMP"
+SYSLINUX="/boot/syslinux"
+
+function update() {
+	# let em know it's started
+	echo "Checking for updates..."
+
+	# check if there are any updates to be processed
+	local UPDATES=$(checkupdates)
+
+	# if we have updates
+	if [[ -n "$UPDATES" ]]
+	then
+		echo "Updates available..."
+
+		# check for kernel update
+		if [[ -n $(echo "$UPDATES" | grep -P "$KERNEL ( |$)") ]]
+		then
+			# copy current kernel and append name for use on rollback
+			cp "/boot/vmlinuz-$KERNEL" "/boot/vmlinuz-$KERNEL-$ALTERNATE"
+			cp "/boot/initramfs-$KERNEL.img" "/boot/initramfs-$KERNEL-$ALTERNATE.img"
+			cp "/boot/initramfs-$KERNEL-fallback.img" "/boot/initramfs-$KERNEL-fallback-$ALTERNATE.img"
+		fi
+
+		# test if $FSROOT is mounted, mount if not
+		mountpoint -q "$FSROOT"
+		if [[ $? != 0 ]]
+		then
+			# not mounted, fix that
+			mount -o subvolid=0 "$FSROOT_DEV" "$FSROOT"
+		fi
+
+		# mounted and no lockfile
+		if [[ $? -eq 0 && ! -e "$FSROOT/$SUBVOLUME_A/$LOCK_FILE" ]]
+		then
+			# set lockfile so we don't have two instances going at once
+			touch "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
+
+			# delete old backup
+			btrfs subvolume delete "$FSROOT/$SUBVOLUME_C"
+
+			# snapshot primary subvolume to temporary subvolume
+			btrfs subvolume snapshot "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_TEMP"
+
+			# upgrade the container
+			pacman --root "$FSROOT/$SUBVOLUME_TEMP" -Syu
+
+			# if pacman succeeded in updating the system
+			if [[ 0 == $? ]]
+			then
+				local SUBVOLUME_ID=$(btrfs subvolume list "$FSROOT" | grep "[[:space:]]$SUBVOLUME_TEMP" | cut -d' ' -f2)
+				if [[ -n "$SUBVOLUME_ID" ]]
+				then
+					btrfs subvolume set-default "$SUBVOLUME_ID" "$FSROOT"
+					if [[ ! -e "$FSROOT/SUBVOLUME_C" ]]
+					then
+						# rotate subvolumes so that $SUBVOLUME_B is our target to revert to if needed
+						mv "$FSROOT/$SUBVOLUME_B" "$FSROOT/$SUBVOLUME_C"
+						mv "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_B"
+						mv "$FSROOT/$SUBVOLUME_TEMP" "$FSROOT/$SUBVOLUME_A"
+
+						# install/update syslinux so that it finds the right default-subvolumeid
+						syslinux-install_update -i -a -m
+
+						# remove lock files
+						rm "$FSROOT/$SUBVOLUME_B/$LOCK_FILE"
+						rm "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
+						exit 0
+					fi
+				fi
+			else
+				echo "Failed to update\n"
+				echo "Deleting $FSROOT/$SUBVOLUME_TEMP"
+
+				# delete temp subvolume on failure
+				btrfs subvolume delete "$FSROOT/$SUBVOLUME_TEMP"
+				rm "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
+				exit 1
+			fi
+		else
+			echo "Prior upgrade was not completed"
+			exit 1
+		fi
+	else
+		echo "No updates available."
+		exit 0
+	fi
+}
+
+function init() {
+	update
+}
+
+init
