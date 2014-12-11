@@ -23,12 +23,12 @@ function update() {
 		echo "Updates available..."
 
 		# check for kernel update
-		if [[ -n $(echo "$UPDATES" | grep -P "$KERNEL ( |$)") ]]
+		if [[ -n $(echo "$UPDATES" | grep -w "$KERNEL") ]]
 		then
 			# copy current kernel and append name for use on rollback
-			cp "/boot/vmlinuz-$KERNEL" "/boot/vmlinuz-$KERNEL-$ALTERNATE"
-			cp "/boot/initramfs-$KERNEL.img" "/boot/initramfs-$KERNEL-$ALTERNATE.img"
-			cp "/boot/initramfs-$KERNEL-fallback.img" "/boot/initramfs-$KERNEL-fallback-$ALTERNATE.img"
+			cp "/boot/vmlinuz-$KERNEL" "/boot/$ALTERNATE-vmlinuz-$KERNEL"
+			cp "/boot/initramfs-$KERNEL.img" "/boot/$ALTERNATE-initramfs-$KERNEL.img"
+			cp "/boot/initramfs-$KERNEL-fallback.img" "/boot/$ALTERNATE-initramfs-$KERNEL-fallback.img"
 		fi
 
 		# test if $FSROOT is mounted, mount if not
@@ -45,9 +45,6 @@ function update() {
 			# set lockfile so we don't have two instances going at once
 			touch "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
 
-			# delete old backup
-			btrfs subvolume delete "$FSROOT/$SUBVOLUME_C"
-
 			# snapshot primary subvolume to temporary subvolume
 			btrfs subvolume snapshot "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_TEMP"
 
@@ -57,10 +54,15 @@ function update() {
 			# if pacman succeeded in updating the system
 			if [[ 0 == $? ]]
 			then
-				local SUBVOLUME_ID=$(btrfs subvolume list "$FSROOT" | grep "[[:space:]]$SUBVOLUME_TEMP" | cut -d' ' -f2)
+				local SUBVOLUME_ID=$(btrfs subvolume list "$FSROOT" | grep -w "$SUBVOLUME_TEMP" | cut -d' ' -f2)
+
 				if [[ -n "$SUBVOLUME_ID" ]]
 				then
 					btrfs subvolume set-default "$SUBVOLUME_ID" "$FSROOT"
+
+					# delete old backup
+					btrfs subvolume delete "$FSROOT/$SUBVOLUME_C"
+
 					if [[ ! -e "$FSROOT/SUBVOLUME_C" ]]
 					then
 						# rotate subvolumes so that $SUBVOLUME_B is our target to revert to if needed
@@ -78,7 +80,7 @@ function update() {
 					fi
 				fi
 			else
-				echo "Failed to update\n"
+				echo "Failed to update"
 				echo "Deleting $FSROOT/$SUBVOLUME_TEMP"
 
 				# delete temp subvolume on failure
@@ -87,7 +89,7 @@ function update() {
 				exit 1
 			fi
 		else
-			echo "Prior upgrade was not completed"
+			echo "Failed to mount "$FSROOT" or prior upgrade was not completed"
 			exit 1
 		fi
 	else
