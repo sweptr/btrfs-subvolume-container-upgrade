@@ -1,105 +1,244 @@
 #!/bin/bash
-KERNEL="linux"
-ALTERNATE="last"
+# Requires: btrfs-progs, chroot
+# Prerequisites: seperate boot partition
+# Usage: update-container {update,revert}
+
+LOCK_FILE=".container-lock"
 FSROOT_DEV="/dev/sda1"
 FSROOT="/var/lib/fsroot"
-LOCK_FILE=".container-lock"
-SUBVOLUME_A=$(btrfs subvolume get-default "$FSROOT" | awk -F "path " '{print $2}')
-SUBVOLUME_B="#B"
-SUBVOLUME_C="#C"
-SUBVOLUME_TEMP="#TEMP"
-SYSLINUX="/boot/syslinux"
+KERNEL="linux"
+PREFIX="#"
+A="A"
+B="B"
+C="C"
+R="REVERT"
+T="TEMP"
+SUBVOLUME_A="$PREFIX$A"
+SUBVOLUME_B="$PREFIX$B"
+SUBVOLUME_C="$PREFIX$C"
+SUBVOLUME_REVERT="$PREFIX$R"
+SUBVOLUME_TEMP="$PREFIX$T"
+CACHE_DIR="var/cache/pacman/pkg"
+
+function pause() {
+	read -p "$*"
+}
+
+function unmount() {
+	if [[ $(mountpoint -q "$1") ]]
+	then
+		local STATUS=$(umount --recursive "$1")
+	fi
+	return "$STATUS"
+}
+
+function kernel_copy() {
+	if [[ "revert" == "$" ]]
+	then
+		echo ":: Reverting kernel upgrade"
+		/usr/bin/cp "/boot/$B-vmlinuz-$KERNEL" "/boot/vmlinuz-$KERNEL"
+		/usr/bin/cp "/boot/$B-initramfs-$KERNEL.img" "/boot/initramfs-$KERNEL.img"
+		/usr/bin/cp "/boot/$B-initramfs-$KERNEL-fallback.img" "/boot/initramfs-$KERNEL-fallback.img"
+		/usr/bin/cp "/boot/$C-vmlinuz-$KERNEL" "/boot/$B-vmlinuz-$KERNEL"
+		/usr/bin/cp "/boot/$C-initramfs-$KERNEL.img" "/boot/$B-initramfs-$KERNEL.img"
+		/usr/bin/cp "/boot/$C-initramfs-$KERNEL-fallback.img" "/boot/$B-initramfs-$KERNEL-fallback.img"
+	else
+		/usr/bin/cp "/boot/$B-vmlinuz-$KERNEL" "/boot/$C-vmlinuz-$KERNEL"
+		/usr/bin/cp "/boot/$B-initramfs-$KERNEL.img" "/boot/$C-initramfs-$KERNEL.img"
+		/usr/bin/cp "/boot/$B-initramfs-$KERNEL-fallback.img" "/boot/$C-initramfs-$KERNEL-fallback.img"
+		/usr/bin/cp "/boot/vmlinuz-$KERNEL" "/boot/$B-vmlinuz-$KERNEL"
+		/usr/bin/cp "/boot/initramfs-$KERNEL.img" "/boot/$B-initramfs-$KERNEL.img"
+		/usr/bin/cp "/boot/initramfs-$KERNEL-fallback.img" "/boot/$B-initramfs-$KERNEL-fallback.img"
+	fi
+}
+
+function clean_up() {
+	echo ":: Cleaning up..."
+	# delete temp snapshot
+	if [[ -e "$FSROOT/$SUBVOLUME_TEMP" ]]
+	then
+		# check for kernel upgrade and revert
+		if [[ $(/usr/bin/pacman -Q "$KERNEL") != $(/usr/bin/pacman -Q "$KERNEL" --root "$FSROOT/$SUBVOLUME_TEMP") ]]
+		then
+			kernel_copy "revert"
+		fi
+
+		unmount "$FSROOT/$SUBVOLUME_TEMP/proc"
+		unmount "$FSROOT/$SUBVOLUME_TEMP/sys"
+		unmount "$FSROOT/$SUBVOLUME_TEMP/dev"
+		unmount "$FSROOT/$SUBVOLUME_TEMP/run"
+		unmount "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
+
+		echo ":: Deleting temporary subvolume"
+		/usr/bin/btrfs subvolume delete "$FSROOT/$SUBVOLUME_TEMP"
+	fi
+
+	# delete lockfiles
+	if [[ -e "$FSROOT/$SUBVOLUME_A/$LOCK_FILE" ]]
+	then
+		rm "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
+	fi
+
+	echo ":: Done"
+	exit 1
+}
+
+function try() {
+	"$@"
+	local STATUS="$?"
+	if [[ 0 -ne "$STATUS" ]]
+	then
+		echo ":: Error with $1"
+		clean_up
+	fi
+	return "$STATUS"
+}
+
+function revert() {
+	echo ":: Reverting..."
+	pause "*** Press return to continue or C-c to exit ***"
+
+	# check for kernel upgrade and revert
+	if [[ $(/usr/bin/pacman -Q "$KERNEL" --root "$FSROOT/$SUBVOLUME_B") != $(/usr/bin/pacman -Q "$KERNEL" --root "$FSROOT/$SUBVOLUME_A") ]]
+	then
+		kernel_copy "revert"
+	fi
+
+	# delete reverted backup
+	if [[ -e "$FSROOT/$SUBVOLUME_REVERT" ]]
+	then
+		/usr/bin/btrfs subvolume delete "$FSROOT/$SUBVOLUME_REVERT"
+	fi
+
+	# revert upgrade
+	mv "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_REVERT"
+	mv "$FSROOT/$SUBVOLUME_B" "$FSROOT/$SUBVOLUME_A"
+	mv "$FSROOT/$SUBVOLUME_C" "$FSROOT/$SUBVOLUME_B"
+	exit 0
+}
+
+function mount() {
+	# test if $FSROOT is mounted, mount if not
+	/usr/bin/mountpoint -q "$FSROOT"
+	if [[ 0 -ne "$?" ]]
+	then
+		# not mounted, fix that
+		try /usr/bin/mount -o subvolid=0 "$FSROOT_DEV $FSROOT"
+	fi
+}
 
 function update() {
-	# let em know it's started
-	echo "Checking for updates..."
+	# catch user break
+	trap clean_up SIGINT SIGTERM
 
-	# check if there are any updates to be processed
-	local UPDATES=$(checkupdates)
-
-	# if we have updates
-	if [[ -n "$UPDATES" ]]
+	# check for lockfile
+	if [[ ! -e "$FSROOT/$SUBVOLUME_A/$LOCK_FILE" ]]
 	then
-		echo "Updates available..."
+		# set lockfile
+		touch "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
 
-		# check for kernel update
-		if [[ -n $(echo "$UPDATES" | grep -w "$KERNEL") ]]
+		# snapshot primary subvolume to temporary subvolume
+		try /usr/bin/btrfs subvolume snapshot "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_TEMP"
+
+		# let em know it's started
+		echo ":: Checking for updates..."
+
+		# check if there are any updates to be processed
+		local UPDATES=$(/usr/bin/checkupdates)
+
+		# if we have updates
+		if [[ -n "$UPDATES" ]]
 		then
-			# copy current kernel and append name for use on rollback
-			cp "/boot/vmlinuz-$KERNEL" "/boot/$ALTERNATE-vmlinuz-$KERNEL"
-			cp "/boot/initramfs-$KERNEL.img" "/boot/$ALTERNATE-initramfs-$KERNEL.img"
-			cp "/boot/initramfs-$KERNEL-fallback.img" "/boot/$ALTERNATE-initramfs-$KERNEL-fallback.img"
-		fi
+			echo ":: Updates available..."
 
-		# test if $FSROOT is mounted, mount if not
-		mountpoint -q "$FSROOT"
-		if [[ $? != 0 ]]
-		then
-			# not mounted, fix that
-			mount -o subvolid=0 "$FSROOT_DEV" "$FSROOT"
-		fi
+			# backup kernel for rollback if update exists
+			if [[ -n $(echo "$UPDATES" | /usr/bin/grep -w "$KERNEL") ]]
+			then
+				echo ":: Kernel update available, creating backup of kernel..."
 
-		# mounted and no lockfile
-		if [[ $? -eq 0 && ! -e "$FSROOT/$SUBVOLUME_A/$LOCK_FILE" ]]
-		then
-			# set lockfile so we don't have two instances going at once
-			touch "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
+				# mount boot to the temp subvolume
+				try /usr/bin/mount -o bind /boot "$FSROOT/$SUBVOLUME_TEMP/boot"
+				kernel_copy
+			fi
 
-			# snapshot primary subvolume to temporary subvolume
-			btrfs subvolume snapshot "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_TEMP"
+			if [[ 0 -eq $(mountpoint -q "/$CACHE_DIR") ]]
+			then
+				try /usr/bin/mount -o bind "/$CACHE_DIR" "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
+			fi
 
 			# upgrade the container
-			pacman --root "$FSROOT/$SUBVOLUME_TEMP" -Syu
+			# /usr/bin/arch-chroot "$FSROOT/$SUBVOLUME_TEMP" /usr/bin/pacman -Syu
+
+			# use chroot directly because arch-chroot is being strange and blanking our mounts
+			try /usr/bin/mount -t proc proc "$FSROOT/$SUBVOLUME_TEMP/proc"
+			try /usr/bin/mount --rbind /sys "$FSROOT/$SUBVOLUME_TEMP/sys"
+			try /usr/bin/mount --rbind /dev "$FSROOT/$SUBVOLUME_TEMP/dev"
+			try /usr/bin/mount --rbind /run "$FSROOT/$SUBVOLUME_TEMP/run"
+
+			try /usr/bin/chroot "$FSROOT/$SUBVOLUME_TEMP" pacman -Syu
+
+			local UPDATE="$?"
+
+			# backup all the downloaded packages to the existing live system
+			/usr/bin/cp -u --reflink "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR/*" "$FSROOT/$SUBVOLUME_A/$CACHE_DIR"
+
+			unmount "$FSROOT/$SUBVOLUME_TEMP/proc"
+			unmount "$FSROOT/$SUBVOLUME_TEMP/sys"
+			unmount "$FSROOT/$SUBVOLUME_TEMP/dev"
+			unmount "$FSROOT/$SUBVOLUME_TEMP/run"
+			unmount "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
 
 			# if pacman succeeded in updating the system
-			if [[ 0 == $? ]]
+			if [[ 0 -eq "$UPDATE" ]]
 			then
-				local SUBVOLUME_ID=$(btrfs subvolume list "$FSROOT" | grep -w "$SUBVOLUME_TEMP" | cut -d' ' -f2)
+				# delete old backup
+				/usr/bin/btrfs subvolume delete "$FSROOT/$SUBVOLUME_C"
 
-				if [[ -n "$SUBVOLUME_ID" ]]
+				if [[ ! -e "$FSROOT/$SUBVOLUME_C" ]]
 				then
-					btrfs subvolume set-default "$SUBVOLUME_ID" "$FSROOT"
+					# rotate subvolumes so that $SUBVOLUME_B is our target to revert to if needed
+					mv "$FSROOT/$SUBVOLUME_B" "$FSROOT/$SUBVOLUME_C"
+					mv "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_B"
+					mv "$FSROOT/$SUBVOLUME_TEMP" "$FSROOT/$SUBVOLUME_A"
 
-					# delete old backup
-					btrfs subvolume delete "$FSROOT/$SUBVOLUME_C"
-
-					if [[ ! -e "$FSROOT/SUBVOLUME_C" ]]
-					then
-						# rotate subvolumes so that $SUBVOLUME_B is our target to revert to if needed
-						mv "$FSROOT/$SUBVOLUME_B" "$FSROOT/$SUBVOLUME_C"
-						mv "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_B"
-						mv "$FSROOT/$SUBVOLUME_TEMP" "$FSROOT/$SUBVOLUME_A"
-
-						# install/update syslinux so that it finds the right default-subvolumeid
-						syslinux-install_update -i -a -m
-
-						# remove lock files
-						rm "$FSROOT/$SUBVOLUME_B/$LOCK_FILE"
-						rm "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
-						exit 0
-					fi
+					# remove lock files
+					rm "$FSROOT/$SUBVOLUME_B/$LOCK_FILE"
+					rm "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
+					echo ":: Your system is now up to date, please reboot into the updated system"
+					exit 0
 				fi
 			else
-				echo "Failed to update"
-				echo "Deleting $FSROOT/$SUBVOLUME_TEMP"
-
-				# delete temp subvolume on failure
-				btrfs subvolume delete "$FSROOT/$SUBVOLUME_TEMP"
-				rm "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
-				exit 1
+				echo ":: *** Failed to update ***"
+				# clean up
+				clean_up
 			fi
 		else
-			echo "Failed to mount "$FSROOT" or prior upgrade was not completed"
-			exit 1
+			# No updates available
+			echo ":: No updates available."
+			exit 0
 		fi
 	else
-		echo "No updates available."
-		exit 0
+		echo ":: Prior upgrade was not completed"
+		exit 1
 	fi
 }
 
 function init() {
-	update
+	mount
+
+	case "$1" in
+		"revert")
+			echo ":: Reverting prior upgrade"
+			revert
+			;;
+		"update")
+			echo ":: Updating system"
+			update
+			;;
+		*)
+			echo ":: Usage: update-container {update, revert}"
+			;;
+	esac
 }
 
-init
+init "$1"
