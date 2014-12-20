@@ -29,7 +29,7 @@ function unmount() {
 	then
 		local STATUS=$(umount --recursive "$1")
 	fi
-	return "$STATUS"
+	echo "$STATUS"
 }
 
 function kernel_copy() {
