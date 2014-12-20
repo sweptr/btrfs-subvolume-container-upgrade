@@ -25,7 +25,8 @@ function pause() {
 }
 
 function unmount() {
-	if [[ $(mountpoint -q "$1") ]]
+	/usr/bin/mountpoint -q "$1"
+	if [[ 0 -eq "$?" ]]
 	then
 		local STATUS=$(umount --recursive "$1")
 	fi
@@ -33,7 +34,7 @@ function unmount() {
 }
 
 function kernel_copy() {
-	if [[ "revert" == "$" ]]
+	if [[ "revert" == "$1" ]]
 	then
 		echo ":: Reverting kernel upgrade"
 		/usr/bin/cp "/boot/$B-vmlinuz-$KERNEL" "/boot/vmlinuz-$KERNEL"
@@ -79,7 +80,7 @@ function clean_up() {
 		rm "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
 	fi
 
-	echo ":: Done"
+	echo ":: Cleanup Complete"
 	exit 1
 }
 
@@ -161,7 +162,8 @@ function update() {
 				kernel_copy
 			fi
 
-			if [[ 0 -eq $(mountpoint -q "/$CACHE_DIR") ]]
+			/usr/bin/mountpoint -q "/$CACHE_DIR"
+			if [[ 0 -eq "$?" ]]
 			then
 				try /usr/bin/mount -o bind "/$CACHE_DIR" "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
 			fi
