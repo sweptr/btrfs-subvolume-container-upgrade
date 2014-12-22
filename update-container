@@ -7,6 +7,7 @@ LOCK_FILE=".container-lock"
 FSROOT_DEV="/dev/sda1"
 FSROOT="/var/lib/fsroot"
 KERNEL="linux"
+PACKAGES=("$KERNEL" "chromium" "glibc" "systemd")
 PREFIX="#"
 A="A"
 B="B"
@@ -30,7 +31,6 @@ function unmount() {
 	then
 		local STATUS=$(umount --recursive "$1")
 	fi
-	echo "$STATUS"
 }
 
 function kernel_copy() {
@@ -77,7 +77,7 @@ function clean_up() {
 	# delete lockfiles
 	if [[ -e "$FSROOT/$SUBVOLUME_A/$LOCK_FILE" ]]
 	then
-		rm "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
+		/usr/bin/rm "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
 	fi
 
 	echo ":: Cleanup Complete"
@@ -112,9 +112,9 @@ function revert() {
 	fi
 
 	# revert upgrade
-	mv "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_REVERT"
-	mv "$FSROOT/$SUBVOLUME_B" "$FSROOT/$SUBVOLUME_A"
-	mv "$FSROOT/$SUBVOLUME_C" "$FSROOT/$SUBVOLUME_B"
+	/usr/bin/mv "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_REVERT"
+	/usr/bin/mv "$FSROOT/$SUBVOLUME_B" "$FSROOT/$SUBVOLUME_A"
+	/usr/bin/mv "$FSROOT/$SUBVOLUME_C" "$FSROOT/$SUBVOLUME_B"
 	exit 0
 }
 
@@ -152,43 +152,64 @@ function update() {
 		then
 			echo ":: Updates available..."
 
-			# backup kernel for rollback if update exists
-			if [[ -n $(echo "$UPDATES" | /usr/bin/grep -w "$KERNEL") ]]
+			for UPDATE in $(echo "$UPDATES")
+			do
+				for PACKAGE in "${PACKAGES[@]}"
+				do
+					if [[ "$UPDATE" == "$PACKAGE" ]]
+					then
+						local UPDATE_SNAPSHOT="true"
+					fi
+				done
+			done
+
+			if [[ -n "$UPDATE_SNAPSHOT" ]]
 			then
-				echo ":: Kernel update available, creating backup of kernel..."
+				# backup kernel for rollback if update exists
+				if [[ -n $(echo "$UPDATES" | /usr/bin/grep -w "$KERNEL") ]]
+				then
+					echo ":: Kernel update available, creating backup of kernel..."
 
-				# mount boot to the temp subvolume
-				try /usr/bin/mount -o bind /boot "$FSROOT/$SUBVOLUME_TEMP/boot"
-				kernel_copy
+					# mount boot to the temp subvolume
+					try /usr/bin/mount -o bind /boot "$FSROOT/$SUBVOLUME_TEMP/boot"
+					kernel_copy
+				fi
+
+				/usr/bin/mountpoint -q "/$CACHE_DIR"
+				if [[ 0 -eq "$?" ]]
+				then
+					try /usr/bin/mount -o bind "/$CACHE_DIR" "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
+				fi
+
+				# upgrade the containeru have uncommitted stuff in your working directory?
+				# /usr/bin/arch-chroot "$FSROOT/$SUBVOLUME_TEMP" /usr/bin/pacman -Syu
+
+				# use chroot directly because arch-chroot is being strange and blanking our mounts
+				try /usr/bin/mount -t proc proc "$FSROOT/$SUBVOLUME_TEMP/proc"
+				try /usr/bin/mount --rbind /sys "$FSROOT/$SUBVOLUME_TEMP/sys"
+				try /usr/bin/mount --rbind /dev "$FSROOT/$SUBVOLUME_TEMP/dev"
+				try /usr/bin/mount --rbind /run "$FSROOT/$SUBVOLUME_TEMP/run"
+
+				echo ":: Updating container"
+				try /usr/bin/chroot "$FSROOT/$SUBVOLUME_TEMP" pacman -Syu
+
+				local UPDATE="$?"
+
+				# backup all the downloaded packages to the existing live system
+				/usr/bin/cp -u --reflink "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR/*" "$FSROOT/$SUBVOLUME_A/$CACHE_DIR"
+
+				unmount "$FSROOT/$SUBVOLUME_TEMP/proc"
+				unmount "$FSROOT/$SUBVOLUME_TEMP/sys"
+				unmount "$FSROOT/$SUBVOLUME_TEMP/dev"
+				unmount "$FSROOT/$SUBVOLUME_TEMP/run"
+				unmount "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
+
+			else
+				# update current system
+				echo ":: Updating live system"
+				try /usr/bin/pacman -Syu
+				local UPDATE="$?"
 			fi
-
-			/usr/bin/mountpoint -q "/$CACHE_DIR"
-			if [[ 0 -eq "$?" ]]
-			then
-				try /usr/bin/mount -o bind "/$CACHE_DIR" "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
-			fi
-
-			# upgrade the container
-			# /usr/bin/arch-chroot "$FSROOT/$SUBVOLUME_TEMP" /usr/bin/pacman -Syu
-
-			# use chroot directly because arch-chroot is being strange and blanking our mounts
-			try /usr/bin/mount -t proc proc "$FSROOT/$SUBVOLUME_TEMP/proc"
-			try /usr/bin/mount --rbind /sys "$FSROOT/$SUBVOLUME_TEMP/sys"
-			try /usr/bin/mount --rbind /dev "$FSROOT/$SUBVOLUME_TEMP/dev"
-			try /usr/bin/mount --rbind /run "$FSROOT/$SUBVOLUME_TEMP/run"
-
-			try /usr/bin/chroot "$FSROOT/$SUBVOLUME_TEMP" pacman -Syu
-
-			local UPDATE="$?"
-
-			# backup all the downloaded packages to the existing live system
-			/usr/bin/cp -u --reflink "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR/*" "$FSROOT/$SUBVOLUME_A/$CACHE_DIR"
-
-			unmount "$FSROOT/$SUBVOLUME_TEMP/proc"
-			unmount "$FSROOT/$SUBVOLUME_TEMP/sys"
-			unmount "$FSROOT/$SUBVOLUME_TEMP/dev"
-			unmount "$FSROOT/$SUBVOLUME_TEMP/run"
-			unmount "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
 
 			# if pacman succeeded in updating the system
 			if [[ 0 -eq "$UPDATE" ]]
@@ -199,15 +220,23 @@ function update() {
 				if [[ ! -e "$FSROOT/$SUBVOLUME_C" ]]
 				then
 					# rotate subvolumes so that $SUBVOLUME_B is our target to revert to if needed
-					mv "$FSROOT/$SUBVOLUME_B" "$FSROOT/$SUBVOLUME_C"
-					mv "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_B"
-					mv "$FSROOT/$SUBVOLUME_TEMP" "$FSROOT/$SUBVOLUME_A"
+					/usr/bin/mv "$FSROOT/$SUBVOLUME_B" "$FSROOT/$SUBVOLUME_C"
+
+					if [[ -n "$UPDATE_SNAPSHOT" ]]
+					then
+						/usr/bin/mv "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_B"
+						/usr/bin/mv "$FSROOT/$SUBVOLUME_TEMP" "$FSROOT/$SUBVOLUME_A"
+						local MESSAGE=":: Your system is now up to date, please reboot to finish the upgrade"
+					else
+						/usr/bin/mv "$FSROOT/$SUBVOLUME_TEMP" "$FSROOT/$SUBVOLUME_B"
+						local MESSAGE=":: Update complete"
+					fi
 
 					# remove lock files
-					rm "$FSROOT/$SUBVOLUME_B/$LOCK_FILE"
-					rm "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
-					echo ":: Your system is now up to date, please reboot into the updated system"
-					exit 0
+					/usr/bin/rm "$FSROOT/$SUBVOLUME_B/$LOCK_FILE"
+					/usr/bin/rm "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
+
+					echo "$MESSAGE"
 				fi
 			else
 				echo ":: *** Failed to update ***"
@@ -238,7 +267,7 @@ function init() {
 			update
 			;;
 		*)
-			echo ":: Usage: update-container {update, revert}"
+			echo ":: Usage: update-container [update, revert] package(s)"
 			;;
 	esac
 }
