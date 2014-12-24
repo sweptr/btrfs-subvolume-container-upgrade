@@ -54,7 +54,7 @@ function kernel_copy() {
 }
 
 function clean_up() {
-	echo ":: Cleaning up..."
+	echo ":: $1, Cleaning up..."
 	# delete temp snapshot
 	if [[ -e "$FSROOT/$SUBVOLUME_TEMP" ]]
 	then
@@ -88,8 +88,7 @@ function try() {
 	local STATUS="$?"
 	if [[ 0 -ne "$STATUS" ]]
 	then
-		echo ":: Error with $1"
-		clean_up
+		clean_up "Error with $1"
 	fi
 	return "$STATUS"
 }
@@ -236,13 +235,11 @@ function update() {
 				fi
 			else
 				# failed to update
-				echo ":: *** Failed to update ***"
-				clean_up
+				clean_up "*** Failed to update ***"
 			fi
 		else
 			# No updates available
-			echo ":: No updates available."
-			clean_up
+			clean_up "No updates available"
 		fi
 	else
 		echo ":: Prior upgrade was not completed"
