@@ -138,12 +138,6 @@ function update() {
 		# set lockfile
 		touch "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
 
-		# snapshot primary subvolume to temporary subvolume
-		try /usr/bin/btrfs subvolume snapshot "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_TEMP"
-
-		# let em know it's started
-		echo ":: Checking for updates..."
-
 		# check if there are any updates to be processed
 		local UPDATES=$(/usr/bin/checkupdates)
 
@@ -151,6 +145,9 @@ function update() {
 		if [[ -n "$UPDATES" ]]
 		then
 			echo ":: Updates available..."
+
+			# snapshot primary subvolume to temporary subvolume
+			try /usr/bin/btrfs subvolume snapshot "$FSROOT/$SUBVOLUME_A" "$FSROOT/$SUBVOLUME_TEMP"
 
 			for UPDATE in $(echo "$UPDATES")
 			do
@@ -259,11 +256,11 @@ function init() {
 
 	case "$1" in
 		"revert")
-			echo ":: Reverting prior upgrade"
+			echo ":: Reverting prior upgrade..."
 			revert
 			;;
 		"update")
-			echo ":: Updating system"
+			echo ":: Checking for updates..."
 			update
 			;;
 		*)
