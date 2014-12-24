@@ -80,8 +80,7 @@ function clean_up() {
 		/usr/bin/rm "$FSROOT/$SUBVOLUME_A/$LOCK_FILE"
 	fi
 
-	echo ":: Cleanup Complete"
-	exit 1
+	exit 0
 }
 
 function try() {
@@ -236,14 +235,14 @@ function update() {
 					echo "$MESSAGE"
 				fi
 			else
+				# failed to update
 				echo ":: *** Failed to update ***"
-				# clean up
 				clean_up
 			fi
 		else
 			# No updates available
 			echo ":: No updates available."
-			exit 0
+			clean_up
 		fi
 	else
 		echo ":: Prior upgrade was not completed"
