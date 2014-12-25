@@ -2,6 +2,21 @@
 # Requires: btrfs-progs, chroot
 # Prerequisites: seperate boot partition
 # Usage: update-container {update,revert}
+# Flow:
+#      In-place update:
+#                        * snapshot SUBVOLUME_A to SUBVOLUME_TEMP
+#                        * update SUBVOLUME_A
+#                        * delete SUBVOLUME_C
+#                        * move SUBVOLUME_B to SUBVOLUME_C
+#                        * move SUBVOLUME_TEMP to SUBVOLUME_B
+#
+#      Container update:
+#                        * snapshot SUBVOLUME_A to SUBVOLUME_TEMP
+#                        * chroot update SUBVOLUME_TEMP
+#                        * delete SUBVOLUME_C
+#                        * move SUBVOLUME_B to SUBVOLUME_C
+#                        * move SUBVOLUME_A to SUBVOLUME_B
+#                        * move SUBVOLUME_TEMP to SUBVOLUME_A
 
 LOCK_FILE=".container-lock"
 FSROOT_DEV="/dev/sda1"
