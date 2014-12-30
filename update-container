@@ -1,5 +1,5 @@
 #!/bin/bash
-# Requires: btrfs-progs, chroot
+# Requires: btrfs-progs
 # Prerequisites: seperate boot partition
 # Usage: update-container {update,revert}
 # Flow:
