@@ -85,6 +85,7 @@ function clean_up() {
 			kernel_copy "revert"
 		fi
 
+		unmount "$FSROOT/$SUBVOLUME_TEMP/boot"
 		unmount "$FSROOT/$SUBVOLUME_TEMP/proc"
 		unmount "$FSROOT/$SUBVOLUME_TEMP/sys"
 		unmount "$FSROOT/$SUBVOLUME_TEMP/dev"
@@ -181,42 +182,51 @@ function update() {
 
 			if [[ -n "$UPDATE_SNAPSHOT" ]]
 			then
-				# backup kernel for rollback if update exists
-				if [[ -n $(echo "$UPDATES" | /usr/bin/grep "^$KERNEL$") ]]
-				then
-					echo ":: Kernel update available, creating backup of kernel..."
-
-					# mount boot to the temp subvolume
-					try /usr/bin/mount -o bind /boot "$FSROOT/$SUBVOLUME_TEMP/boot"
-					kernel_copy
-				fi
-
-				/usr/bin/mountpoint -q "/$CACHE_DIR"
-				if [[ 0 -eq "$?" ]]
-				then
-					local SCACHE_DIR="true"
-					try /usr/bin/mount -o bind "/$CACHE_DIR" "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
-				fi
-
-
-				try /usr/bin/mount -o bind /proc "$FSROOT/$SUBVOLUME_TEMP/proc"
-				try /usr/bin/mount -o bind  /dev "$FSROOT/$SUBVOLUME_TEMP/dev"
-
 				echo ":: Updating container"
-				try /usr/bin/pacman -Syu -r "$FSROOT/$SUBVOLUME_TEMP"
-
-				local UPDATE="$?"
-
-				# backup all the downloaded packages to the existing live system
-				if [[ -z "$SCACHE_DIR" ]]
+				read -p " **** Continue? (y/n)" -n 1 -r
+				echo
+				if [[ "$REPLY" =~ ^[Yy]$ ]]
 				then
-					/usr/bin/cp -u --reflink "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR/*" "$FSROOT/$SUBVOLUME_A/$CACHE_DIR"
-				fi
 
-				unmount "$FSROOT/$SUBVOLUME_TEMP/proc"
-				unmount "$FSROOT/$SUBVOLUME_TEMP/dev"
-				unmount "$FSROOT/$SUBVOLUME_TEMP/boot"
-				unmount "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
+					# backup kernel for rollback if update exists
+					if [[ -n $(echo "$UPDATES" | /usr/bin/grep "^$KERNEL$") ]]
+					then
+						echo ":: Kernel update available, creating backup of kernel..."
+
+						# mount boot to the temp subvolume
+						try /usr/bin/mount -o bind /boot "$FSROOT/$SUBVOLUME_TEMP/boot"
+						kernel_copy
+					fi
+
+					/usr/bin/mountpoint -q "/$CACHE_DIR"
+					if [[ 0 -eq "$?" ]]
+					then
+						local SCACHE_DIR="true"
+						try /usr/bin/mount -o bind "/$CACHE_DIR" "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
+					fi
+
+
+					try /usr/bin/mount -o bind /proc "$FSROOT/$SUBVOLUME_TEMP/proc"
+					try /usr/bin/mount -o bind  /dev "$FSROOT/$SUBVOLUME_TEMP/dev"
+
+					try /usr/bin/pacman -Syu -r "$FSROOT/$SUBVOLUME_TEMP"
+
+					local UPDATE="$?"
+
+					# backup all the downloaded packages to the existing live system
+					if [[ -z "$SCACHE_DIR" ]]
+					then
+						/usr/bin/cp -u --reflink "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR/*" "$FSROOT/$SUBVOLUME_A/$CACHE_DIR"
+					fi
+
+					unmount "$FSROOT/$SUBVOLUME_TEMP/proc"
+					unmount "$FSROOT/$SUBVOLUME_TEMP/dev"
+					unmount "$FSROOT/$SUBVOLUME_TEMP/boot"
+					unmount "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
+				else
+					# user aborted, cleanup
+					clean_up
+				fi
 
 			else
 				# update current system
