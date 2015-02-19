@@ -17,27 +17,51 @@
 #                        * move SUBVOLUME_B to SUBVOLUME_C
 #                        * move SUBVOLUME_A to SUBVOLUME_B
 #                        * move SUBVOLUME_TEMP to SUBVOLUME_A
+# Please see config.sample for an example config which must reside in the directory the script lives.
 
-LOCK_FILE=".container-lock"
-FSROOT_DEV="/dev/sda1"
-FSROOT="/var/lib/fsroot"
-KERNEL="linux"
-PACKAGES=("$KERNEL" "chromium" "glibc" "systemd")
-PREFIX="#"
-A="A"
-B="B"
-C="C"
-R="REVERT"
-T="TEMP"
-SUBVOLUME_A="$PREFIX$A"
-SUBVOLUME_B="$PREFIX$B"
-SUBVOLUME_C="$PREFIX$C"
-SUBVOLUME_REVERT="$PREFIX$R"
-SUBVOLUME_TEMP="$PREFIX$T"
-CACHE_DIR="var/cache/pacman/pkg"
+function check() {
+	if [[ "$(id -u)" != "0" ]]
+	then
+		echo " error: You cannot perform this operation unless you are root."
+		exit 1
+	fi
+}
+
+function load_config() {
+	# get my pwd even if called from a symlink http://stackoverflow.com/a/246128
+	# resolve $SOURCE until the file is no longer a symlink
+	SOURCE="${BASH_SOURCE[0]}"
+	while [ -h "$SOURCE" ]
+	do
+		DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+		SOURCE="$(readlink "$SOURCE")"
+
+		# if $SOURCE was a relative symlink, we need to resolve it relative to the path where the symlink file was located
+		if [[ $SOURCE != /* ]]
+		then
+			SOURCE="$DIR/$SOURCE"
+		fi
+	done
+
+	DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+	if [[ -r "$DIR/config" ]]
+	then
+		source "$DIR/config"
+	else
+		echo " error: No config found!"
+		exit 0
+	fi
+}
 
 function pause() {
-	read -p "$*"
+	read -p "Continue? (y/n)" -n 1 -r
+	echo
+	if [[ "$REPLY" =~ ^[Yy]$ ]]
+	then
+		return
+	else
+		clean_up
+	fi
 }
 
 function unmount() {
@@ -117,7 +141,7 @@ function try() {
 
 function revert() {
 	echo ":: Reverting..."
-	pause "*** Press return to continue or C-c to exit ***"
+	pause
 
 	# check for kernel upgrade and revert
 	if [[ $(/usr/bin/pacman -Q "$KERNEL" --root "$FSROOT/$SUBVOLUME_B") != $(/usr/bin/pacman -Q "$KERNEL" --root "$FSROOT/$SUBVOLUME_A") ]]
@@ -183,50 +207,43 @@ function update() {
 			if [[ -n "$UPDATE_SNAPSHOT" ]]
 			then
 				echo ":: Updating container"
-				read -p " **** Continue? (y/n)" -n 1 -r
-				echo
-				if [[ "$REPLY" =~ ^[Yy]$ ]]
+				pause
+
+				# backup kernel for rollback if update exists
+				if [[ -n $(echo "$UPDATES" | /usr/bin/grep "^$KERNEL$") ]]
 				then
+					echo ":: Kernel update available, creating backup of kernel..."
 
-					# backup kernel for rollback if update exists
-					if [[ -n $(echo "$UPDATES" | /usr/bin/grep "^$KERNEL$") ]]
-					then
-						echo ":: Kernel update available, creating backup of kernel..."
-
-						# mount boot to the temp subvolume
-						try /usr/bin/mount -o bind /boot "$FSROOT/$SUBVOLUME_TEMP/boot"
-						kernel_copy
-					fi
-
-					/usr/bin/mountpoint -q "/$CACHE_DIR"
-					if [[ 0 -eq "$?" ]]
-					then
-						local SCACHE_DIR="true"
-						try /usr/bin/mount -o bind "/$CACHE_DIR" "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
-					fi
-
-
-					try /usr/bin/mount -o bind /proc "$FSROOT/$SUBVOLUME_TEMP/proc"
-					try /usr/bin/mount -o bind  /dev "$FSROOT/$SUBVOLUME_TEMP/dev"
-
-					try /usr/bin/pacman -Syu -r "$FSROOT/$SUBVOLUME_TEMP"
-
-					local UPDATE="$?"
-
-					# backup all the downloaded packages to the existing live system
-					if [[ -z "$SCACHE_DIR" ]]
-					then
-						/usr/bin/cp -u --reflink "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR/*" "$FSROOT/$SUBVOLUME_A/$CACHE_DIR"
-					fi
-
-					unmount "$FSROOT/$SUBVOLUME_TEMP/proc"
-					unmount "$FSROOT/$SUBVOLUME_TEMP/dev"
-					unmount "$FSROOT/$SUBVOLUME_TEMP/boot"
-					unmount "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
-				else
-					# user aborted, cleanup
-					clean_up
+					# mount boot to the temp subvolume
+					try /usr/bin/mount -o bind /boot "$FSROOT/$SUBVOLUME_TEMP/boot"
+					kernel_copy
 				fi
+
+				/usr/bin/mountpoint -q "/$CACHE_DIR"
+				if [[ 0 -eq "$?" ]]
+				then
+					local SCACHE_DIR="true"
+					try /usr/bin/mount -o bind "/$CACHE_DIR" "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
+				fi
+
+
+				try /usr/bin/mount -o bind /proc "$FSROOT/$SUBVOLUME_TEMP/proc"
+				try /usr/bin/mount -o bind  /dev "$FSROOT/$SUBVOLUME_TEMP/dev"
+
+				try /usr/bin/pacman -Syu -r "$FSROOT/$SUBVOLUME_TEMP"
+
+				local UPDATE="$?"
+
+				# backup all the downloaded packages to the existing live system
+				if [[ -z "$SCACHE_DIR" ]]
+				then
+					/usr/bin/cp -u --reflink "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR/*" "$FSROOT/$SUBVOLUME_A/$CACHE_DIR"
+				fi
+
+				unmount "$FSROOT/$SUBVOLUME_TEMP/proc"
+				unmount "$FSROOT/$SUBVOLUME_TEMP/dev"
+				unmount "$FSROOT/$SUBVOLUME_TEMP/boot"
+				unmount "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
 
 			else
 				# update current system
@@ -277,6 +294,8 @@ function update() {
 }
 
 function init() {
+	check
+	load_config
 	mount
 
 	case "$1" in
