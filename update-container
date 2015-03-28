@@ -54,7 +54,7 @@ function load_config() {
 }
 
 function pause() {
-	read -s -p ":: Continue? [Y/n] " -n 1 -r
+	read -p ":: Continue? [y/N] " -n 1 -r
 	echo
 	if [[ "$REPLY" =~ ^[Yy]$ ]]
 	then
