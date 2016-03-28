@@ -243,6 +243,8 @@ function update() {
 				unmount "$FSROOT/$SUBVOLUME_TEMP/proc"
 				unmount "$FSROOT/$SUBVOLUME_TEMP/dev"
 				unmount "$FSROOT/$SUBVOLUME_TEMP/boot"
+				unmount "$FSROOT/$SUBVOLUME_TEMP/sys"
+				unmount "$FSROOT/$SUBVOLUME_TEMP/run"
 				unmount "$FSROOT/$SUBVOLUME_TEMP/$CACHE_DIR"
 
 			else
